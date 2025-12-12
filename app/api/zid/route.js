@@ -52,7 +52,7 @@ function buildContents(payload) {
 function mapZidEventToTikTok(eventName) {
   const e = (eventName || "").toLowerCase();
 
-  if (e.includes("payment_status") || e.includes("paid")) return "Purchase";
+  if (e.includes("payment_status") || e.includes("paid") || e === "purchase") return "Purchase";
   if (e === "order.create" || e.includes("order.create")) return "InitiateCheckout";
   if (e.includes("abandoned_cart")) return "AddToCart";
   if (e.includes("customer.register") || e.includes("register")) return "CompleteRegistration";
@@ -60,12 +60,28 @@ function mapZidEventToTikTok(eventName) {
   return "CustomEvent";
 }
 
-async function sendToTikTok({ event, event_id, storeUrl, ip, ua, email, phone, value, currency, contents }) {
+async function sendToTikTok({
+  event,
+  event_id,
+  storeUrl,
+  ip,
+  ua,
+  email,
+  phone,
+  value,
+  currency,
+  contents,
+  testEventCode, // ✅
+}) {
   const body = {
     pixel_code: process.env.TIKTOK_PIXEL_ID,
     event,
     event_id,
     timestamp: Math.floor(Date.now() / 1000),
+
+    // ✅ إذا موجود نخليه يرسل لاختبار الأحداث، إذا غير موجود ما ينرسل
+    test_event_code: testEventCode || undefined,
+
     context: {
       page: { url: storeUrl },
       user: {
@@ -111,28 +127,31 @@ export async function POST(req) {
     const event = mapZidEventToTikTok(zidEvent);
 
     const orderId =
-      pick(raw, ["data.id", "data.order_id", "order.id", "order.order_id", "id", "order_id"]) ||
+      pick(raw, ["ecommerce.transaction_id", "data.id", "data.order_id", "order.id", "order.order_id", "id", "order_id"]) ||
       `${Date.now()}`;
 
     const value =
-      pick(raw, ["data.total", "data.total_amount", "order.total", "order.total_amount", "total", "total_amount"]) ||
-      pick(raw, ["data.amount", "amount"]) ||
+      pick(raw, ["ecommerce.value", "data.total", "data.total_amount", "order.total", "order.total_amount", "total", "total_amount"]) ||
       0;
 
-    const currency = pick(raw, ["data.currency", "order.currency", "currency"]) || "SAR";
+    const currency = pick(raw, ["ecommerce.currency", "data.currency", "order.currency", "currency"]) || "SAR";
 
-    const email = pick(raw, ["data.customer.email", "order.customer.email", "customer.email", "email"]) || null;
+    const email =
+      pick(raw, ["customer.email", "data.customer.email", "order.customer.email", "email"]) || null;
+
     const phone =
-      pick(raw, ["data.customer.mobile", "data.customer.phone", "order.customer.mobile", "customer.mobile", "phone"]) ||
+      pick(raw, ["customer.mobile", "data.customer.mobile", "data.customer.phone", "order.customer.mobile", "customer.mobile", "phone"]) ||
       null;
 
     const contents = buildContents(raw);
+
+    // ✅ هنا نقرأ رمز الاختبار إذا أرسلته من GTM داخل JSON
+    const testEventCode = pick(raw, ["test_event_code"]) || null;
 
     const ip = req.headers.get("x-forwarded-for") || "";
     const ua = req.headers.get("user-agent") || "";
 
     const event_id = `${event}:${orderId}`;
-
     const storeUrl = process.env.STORE_URL || "https://tokotoysa.com/";
 
     const tiktok = await sendToTikTok({
@@ -146,9 +165,10 @@ export async function POST(req) {
       value,
       currency,
       contents,
+      testEventCode, // ✅
     });
 
-    return Response.json({ ok: true, zid_event: zidEvent, tiktok_event: event, event_id, tiktok });
+    return Response.json({ ok: true, zid_event: zidEvent, tiktok_event: event, event_id, test_event_code: testEventCode, tiktok });
   } catch (err) {
     return Response.json({ ok: false, error: String(err) }, { status: 500 });
   }
